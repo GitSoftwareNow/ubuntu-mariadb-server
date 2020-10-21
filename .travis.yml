@@ -1,0 +1,44 @@
+sudo: false
+dist: focal
+language: bash
+services: docker
+env:
+  - VERSION=10.5.6
+
+install:
+  - git clone https://github.com/GitSoftwareNow/ubuntu-mariadb-server.git ~/mariadb-docker-images
+
+before_script:
+  - env | sort
+  - wget -qO- 'https://github.com/tianon/pgp-happy-eyeballs/raw/master/hack-my-builds.sh' | bash
+  - cd "$VERSION"
+  - image="mariadb-server-docker:$VERSION"
+
+script:
+  - |
+    (
+      set -Eeuo pipefail
+      set -x
+      echo "image is $image"
+      docker build -t "$image" .
+      ~/mariadb-docker-images/test/run.sh "$image"
+      docker run -p 5432:5432 -d --name db arminc/clair-db:latest
+      docker run -p 6060:6060 --link db:postgres -d --name clair arminc/clair-local-scan:v2.0.1
+      docker run -v /var/run/docker.sock:/var/run/docker.sock -d --name clair-scanner mariadb/clair-scanner:latest tail -f /dev/null
+      clair_ip=`docker exec -it clair hostname -i | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'`
+      scanner_ip=`docker exec -it clair-scanner hostname -i | grep -oE '[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+'`
+      echo "clair_ip = $clair_ip"
+      echo "scanner_ip = $scanner_ip"
+      docker cp whitelist.yml clair-scanner:/whitelist.yml
+      docker exec -it clair-scanner clair-scanner --ip ${scanner_ip} --clair=http://${clair_ip}:6060 -t High -w /whitelist.yml $image
+    )
+after_script:
+- docker images
+
+notifications:
+  email:
+    recipients:
+      - cpe@mariadb.com
+    on_success: never # default: change
+    on_failure: always # default: always
+
